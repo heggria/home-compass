@@ -1,6 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import { ControlHint } from "./ControlHint";
 import { Inspector } from "./Inspector";
 import { LayerSwitcher } from "./LayerSwitcher";
 import { Legend } from "./Legend";
@@ -23,6 +24,7 @@ export function MapView() {
       <LayerSwitcher />
       <Legend />
       <Inspector />
+      <ControlHint />
       <a
         href="/"
         className="pointer-events-auto absolute bottom-4 right-4 rounded-full border px-3 py-1 text-[11px] uppercase tracking-[0.18em] text-zinc-300 backdrop-blur-md"

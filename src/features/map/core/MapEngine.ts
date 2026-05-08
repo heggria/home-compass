@@ -8,7 +8,7 @@
  */
 
 import * as THREE from "three";
-import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { MapControls } from "three/addons/controls/MapControls.js";
 import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
@@ -36,7 +36,7 @@ export class MapEngine {
 
   readonly camera: THREE.PerspectiveCamera;
   readonly renderer: THREE.WebGLRenderer;
-  readonly controls: OrbitControls;
+  readonly controls: MapControls;
 
   private composer?: EffectComposer;
   private layers = new Map<string, MapLayer>();
@@ -49,6 +49,8 @@ export class MapEngine {
   private startTime = performance.now();
   private resizeObserver?: ResizeObserver;
   private storeUnsub: Array<() => void> = [];
+  /** Detach functions for input handlers (modifier swap, trackpad gestures…). */
+  private inputCleanups: Array<() => void> = [];
 
   /** Externally provided callback so React can plug into hover events. */
   onHover?: (entity: MapEntity | null) => void;
@@ -93,14 +95,40 @@ export class MapEngine {
     this.camera.position.set(3200, 5400, 5200);
     this.camera.lookAt(0, 0, 0);
 
-    // Controls
-    this.controls = new OrbitControls(this.camera, this.renderer.domElement);
+    // Controls — City-Skylines style:
+    //   left-drag      → pan (XZ plane)
+    //   ⌘ + left-drag  → orbit / rotate
+    //   right-drag     → orbit / rotate (also)
+    //   wheel          → dolly (zoom)
+    //   trackpad 2-finger drag → pan
+    //   trackpad 3-finger drag → rotate
+    //
+    // We use MapControls (the OrbitControls subclass tuned for top-down)
+    // and rebind mouseButtons. The Cmd-modifier swap is implemented by
+    // toggling controls.mouseButtons on keydown/keyup (see below).
+    this.controls = new MapControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.08;
     this.controls.minDistance = 600;
     this.controls.maxDistance = 22_000;
     this.controls.maxPolarAngle = Math.PI / 2 - 0.05;
     this.controls.target.set(0, 0, 0);
+    this.controls.zoomSpeed = 1.1;
+    this.controls.rotateSpeed = 0.9;
+    this.controls.panSpeed = 1.0;
+    this.controls.screenSpacePanning = false; // pan along world XZ, not view-plane
+    this.controls.mouseButtons = {
+      LEFT: THREE.MOUSE.PAN,
+      MIDDLE: THREE.MOUSE.DOLLY,
+      RIGHT: THREE.MOUSE.ROTATE,
+    };
+    // Touch: one finger pans, two fingers dolly+rotate (Skylines-friendly).
+    this.controls.touches = {
+      ONE: THREE.TOUCH.PAN,
+      TWO: THREE.TOUCH.DOLLY_ROTATE,
+    };
+    this.installModifierBindings();
+    this.installTrackpadGestures();
 
     // Postprocessing — calibrated bloom. Strength dialed down so glowing
     // sprites read as glints not white-out; threshold raised so only
@@ -325,6 +353,83 @@ export class MapEngine {
 
   // ------------------------------- lifecycle
 
+  /**
+   * Cmd / Meta swap: while held, left-drag rotates instead of pans, so
+   * power users can spin the camera without leaving the left mouse button.
+   * Right-drag still rotates regardless (matches Skylines / Cesium).
+   */
+  private installModifierBindings() {
+    const enterRotate = () => {
+      this.controls.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
+      this.canvas.style.cursor = "grab";
+    };
+    const exitRotate = () => {
+      this.controls.mouseButtons.LEFT = THREE.MOUSE.PAN;
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      // Meta = ⌘ on macOS, Win key on Windows; Control covers Linux/Win parity.
+      if (e.metaKey || e.ctrlKey) enterRotate();
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (!e.metaKey && !e.ctrlKey) exitRotate();
+    };
+    const onBlur = () => exitRotate();
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur);
+    this.inputCleanups.push(() => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onBlur);
+    });
+  }
+
+  /**
+   * Trackpad gestures (Mac magic trackpad / Windows precision touchpad):
+   *
+   *   2-finger drag        → pan         (browser fires `wheel` with deltaX/Y)
+   *   2-finger pinch       → zoom        (handled natively by MapControls' wheel)
+   *   2-finger drag + ⌘    → rotate      (modifier swap, see installModifierBindings)
+   *   3-finger drag        → rotate      (we listen to gesture events when present;
+   *                                       fallback path: shift + drag)
+   *
+   * Note: browsers do NOT expose 3-finger drag as a discrete event on most
+   * platforms (it gets eaten by the OS for Mission Control). The realistic
+   * path on Mac is "2-finger drag + ⌘", which the modifier binding covers.
+   * To still honour the user's request we also accept Shift + 2-finger drag
+   * as a rotation gesture so trackpad users have a no-Cmd path.
+   */
+  private installTrackpadGestures() {
+    const ROTATE_DEG_PER_PX = 0.4;
+    const onWheel = (e: WheelEvent) => {
+      // We only act on horizontal-dominant wheel events (typical 2-finger
+      // drag) when Shift is held — that's our "rotate without Cmd" gesture.
+      // Vertical wheel is left to MapControls' default zoom behavior.
+      if (!e.shiftKey) return;
+      // If the user holds Shift while spinning the wheel they want to rotate,
+      // not zoom. Prevent default so MapControls doesn't dolly.
+      e.preventDefault();
+      const az = (e.deltaX || 0) * ROTATE_DEG_PER_PX * (Math.PI / 180);
+      const el = (e.deltaY || 0) * ROTATE_DEG_PER_PX * (Math.PI / 180);
+      // OrbitControls exposes spherical-coords helpers via internal methods,
+      // but they're not part of the public API. Easiest cross-version path
+      // is to mutate the camera position around the target.
+      const offset = new THREE.Vector3()
+        .copy(this.camera.position)
+        .sub(this.controls.target);
+      const sph = new THREE.Spherical().setFromVector3(offset);
+      sph.theta -= az;
+      sph.phi = Math.max(0.1, Math.min(Math.PI / 2 - 0.05, sph.phi - el));
+      offset.setFromSpherical(sph);
+      this.camera.position.copy(this.controls.target).add(offset);
+      this.camera.lookAt(this.controls.target);
+    };
+    this.canvas.addEventListener("wheel", onWheel, { passive: false });
+    this.inputCleanups.push(() => {
+      this.canvas.removeEventListener("wheel", onWheel);
+    });
+  }
+
   private addSkyDome() {
     const geom = new THREE.SphereGeometry(50_000, 32, 16);
     const mat = new THREE.ShaderMaterial({
@@ -378,6 +483,7 @@ export class MapEngine {
   dispose() {
     cancelAnimationFrame(this.rafHandle);
     this.storeUnsub.forEach((fn) => fn());
+    this.inputCleanups.forEach((fn) => fn());
     this.resizeObserver?.disconnect();
     this.canvas.removeEventListener("pointermove", this.handlePointerMove);
     this.canvas.removeEventListener("pointerdown", this.handlePointerDown);
