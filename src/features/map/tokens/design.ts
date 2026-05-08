@@ -1,50 +1,61 @@
 /**
- * Design tokens — the single source of truth for color / type / motion.
+ * Design tokens — cyberpunk-Beijing palette.
  *
- * Mirrors css custom properties in `src/app/globals.css`, and is the only
- * place layers should pull style constants from. This keeps the look
- * consistent and gives us one knob to adjust the whole map.
+ * Single source of truth for colors / motion / z-order. Layers must pull
+ * style constants from here so the whole map stays coherent.
+ *
+ * Aesthetic direction: deep midnight-violet base + cyan / magenta accents,
+ * inspired by city night skylines (Akira / Cyberpunk 2077 minimap / 西安不
+ * 夜城). Bright = important, glow = signal density, dark = breathing room.
  */
 
 export const tone = {
-  bg: "#08090d",
-  bgPanel: "#10131a",
-  bgPanelStrong: "#13161e",
-  border: "rgba(255,255,255,0.06)",
-  borderStrong: "rgba(255,255,255,0.12)",
-  ink: "#e8eaf2",
-  ink2: "#a8acba",
-  ink3: "#6f7384",
-  brand: "#7657FF",
-  brandSoft: "#9F8BFF",
-  accent: "#FF8C42",
-  good: "#3DD68C",
+  bg: "#06070d",
+  bgPanel: "#0c0d18",
+  bgPanelStrong: "#10121e",
+  border: "rgba(140,160,255,0.10)",
+  borderStrong: "rgba(160,180,255,0.22)",
+  ink: "#eef0ff",
+  ink2: "#a8acc6",
+  ink3: "#666a86",
+  brand: "#A872FF", // primary action / selection
+  brandSoft: "#C9A8FF",
+  accent: "#FF6B9F", // hot pink — for emphasis
+  good: "#2DE6B6",
   warn: "#FFB547",
   bad: "#FF4D6D",
-  cool: "#54D7E8",
+  cool: "#5BE7F0", // cyan
 } as const;
 
 export const sceneColors = {
-  /** Sky gradient (top → horizon). */
-  skyTop: 0x0a0d14,
-  skyHorizon: 0x10141d,
-  fog: 0x05070a,
+  // Sky gradient (rendered as inverted dome shader)
+  skyTop: 0x05060f,        // near-black violet at zenith
+  skyMid: 0x10142a,        // deep indigo
+  skyHorizon: 0x2a1a4a,    // hot violet at horizon
+  fog: 0x0a0c1a,           // matches deep horizon for blend
 
-  ground: 0x0c0f15,
-  gridMajor: 0x1c2230,
-  gridMinor: 0x141823,
+  // Ground (used as fallback color where grid shader fails)
+  ground: 0x05060d,
+  // Grid is rendered procedurally now — these are sampled inside the shader.
+  gridMajor: 0x6c7bff,
+  gridMinor: 0x2a3060,
+  gridGlow: 0xa872ff,
 
-  water: 0x18324a,
-  waterEdge: 0x254a6c,
+  // BBox neon ring around the data envelope
+  envelopeNeon: 0xa872ff,
 
-  /** Roads by class — ranked by visual weight */
+  // Water — bright cyan; rivers should _read_ at a glance
+  water: 0x123a55,
+  waterEdge: 0x5be7f0,
+
+  // Roads — cool monochrome with motorways pushed warm
   road: {
-    motorway: 0xffb547,
-    trunk: 0xff8c42,
-    primary: 0xe7e2dd,
-    secondary: 0x90969f,
-    tertiary: 0x5b6171,
-    other: 0x383d49,
+    motorway: 0xff8c4a,
+    trunk: 0xffb547,
+    primary: 0xc8d2ff,
+    secondary: 0x7d87a8,
+    tertiary: 0x4a5375,
+    other: 0x2a304a,
   } as Record<string, number>,
 
   rail: 0x6f7384,
@@ -52,26 +63,47 @@ export const sceneColors = {
 
   district: {
     /** Used when the district has no transaction data. */
-    neutral: 0x2a3142,
-    /** Sequential ramp by 均价 (cool → warm). 0 = cheap, 1 = expensive. */
+    neutral: 0x1d2038,
+    /**
+     * Sequential ramp by 综合分 / 均价. Cool & desaturated at the low end so
+     * cheap-but-good areas stay calm; ramp up to vivid magenta at the top so
+     * "expensive / hot" reads instantly without needing the legend.
+     *
+     * Rule of thumb: low end stays under 60% saturation, high end goes 90%+.
+     */
     rampStops: [
-      [0.0, 0x2A6FD0],
-      [0.25, 0x4DB2E0],
-      [0.5, 0x6BD78C],
-      [0.75, 0xFFB547],
-      [1.0, 0xFF4D6D],
+      [0.00, 0x223a4a], // dark teal — quiet
+      [0.18, 0x2a6f7d], // teal
+      [0.36, 0x3aa298], // mint
+      [0.54, 0x6a86c7], // periwinkle (transitional)
+      [0.72, 0xa872ff], // brand violet (mid-high)
+      [0.86, 0xff6b9f], // hot pink
+      [1.00, 0xff2255], // alarm red
     ] as [number, number][],
-    /** Edge color for selected/hover. */
-    haloHover: 0x9f8bff,
+    /** Halo (emissive) on hover / selection. */
+    haloHover: 0xa872ff,
     haloSelect: 0xffffff,
+    /** Top-edge neon outline color */
+    topEdge: 0xc9a8ff,
   },
 
-  subwayDefault: 0x00d4ff,
-  hospital: 0xff4d6d,
-  school: 0x4da8ff,
-  mall: 0xff8c42,
-  park: 0x3dd68c,
-  policy: 0xa18bff,
+  /** Subway line color overrides — 13/未知线 raw colors are too saturated. */
+  subwayLineOverrides: {
+    "13号线": 0xffc14a,    // warm amber instead of acid yellow
+    "27号线": 0xff77c8,    // softer pink-violet
+    "未知线": 0x6cc8ff,    // calmer cyan
+  } as Record<string, number>,
+
+  subwayDefault: 0x5be7f0,
+  hospital: 0xff5577,
+  school: 0x6cc8ff,
+  university: 0xc8a2ff,
+  kindergarten: 0x9ee9ff,
+  mall: 0xffa14a,
+  supermarket: 0xffd34a,
+  park: 0x2de6b6,
+  policy: 0xa872ff,
+  landmark: 0xeef0ff,
 } as const;
 
 export const motion = {
@@ -91,10 +123,10 @@ export const z = {
   parks: 0.8,
   roads: 1.0,
   rail: 1.2,
-  subway: 1.5,
-  serviceArea: 1.8,
-  districtBase: 2.0,
-  poi: 50,
+  subway: 2.0,
+  serviceArea: 2.4,
+  districtBase: 3.0,
+  poi: 30,            // POIs sit above district roofs (most are <=300 m); we use sprite world-positioning anyway
   label: 80,
 } as const;
 
