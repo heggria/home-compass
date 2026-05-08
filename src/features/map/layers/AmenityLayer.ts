@@ -1,15 +1,20 @@
 /**
  * AmenityLayer — generic POI layer for schools, hospitals, malls, parks…
  *
- * One layer module supports multiple categories so we don't end up with
- * 6 near-identical files. The layer creates one `Points` per category and
- * exposes a unified picking surface.
+ * Each POI renders as a billboarded soft-glowing disc (Sprite + radial-
+ * gradient canvas texture, additive blend) so the markers feel like neon
+ * lights and bloom kicks in for free. We render with depthTest off so they
+ * always shine through the district extrusions — the user sees what's
+ * around them at a glance.
+ *
+ * One layer module supports multiple categories so we don't end up with 6
+ * near-identical files.
  */
 
 import * as THREE from "three";
 import type { LayerSetupContext, MapEntity, MapLayer } from "../core/types";
 import { repo, type PoiItem } from "../data/repo";
-import { sceneColors, z } from "../tokens/design";
+import { z } from "../tokens/design";
 
 export interface AmenityCategoryConfig {
   /** key in poi_cats.json */
@@ -20,9 +25,9 @@ export interface AmenityCategoryConfig {
   kind: "school" | "hospital" | "mall" | "park" | "custom";
   /** fallback color if file does not provide one */
   fallbackColor: number;
-  /** picking threshold in pixels (Points raycaster) */
+  /** picking threshold in pixels */
   pickThreshold?: number;
-  /** marker size in screen pixels */
+  /** marker radius in world meters (sprite scale; tuned with bloom in mind) */
   size?: number;
   /** service radius (m) used for halo */
   serviceRadiusM?: number;
@@ -34,6 +39,51 @@ interface PointRecord {
   item: PoiItem;
   worldX: number;
   worldZ: number;
+  haloSprite: THREE.Sprite;
+  dotSprite: THREE.Sprite;
+}
+
+/** Lazily-built shared "soft glowing disc" texture (one per process). */
+let GLOW_TEX: THREE.CanvasTexture | null = null;
+function glowTexture() {
+  if (GLOW_TEX) return GLOW_TEX;
+  const N = 128;
+  const c = document.createElement("canvas");
+  c.width = c.height = N;
+  const ctx = c.getContext("2d")!;
+  const grad = ctx.createRadialGradient(N / 2, N / 2, 0, N / 2, N / 2, N / 2);
+  // Soft outer fall-off only; inner highlight is handled by the second
+  // sprite layer so we can tune density independently.
+  grad.addColorStop(0.00, "rgba(255,255,255,0.55)");
+  grad.addColorStop(0.35, "rgba(255,255,255,0.22)");
+  grad.addColorStop(0.75, "rgba(255,255,255,0.04)");
+  grad.addColorStop(1.00, "rgba(255,255,255,0.0)");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, N, N);
+  GLOW_TEX = new THREE.CanvasTexture(c);
+  GLOW_TEX.colorSpace = THREE.SRGBColorSpace;
+  return GLOW_TEX;
+}
+
+/** A small, hard-edged dot with a tiny ring — locates the POI precisely. */
+let DOT_TEX: THREE.CanvasTexture | null = null;
+function dotTexture() {
+  if (DOT_TEX) return DOT_TEX;
+  const N = 64;
+  const c = document.createElement("canvas");
+  c.width = c.height = N;
+  const ctx = c.getContext("2d")!;
+  // Hot core
+  const grad = ctx.createRadialGradient(N / 2, N / 2, 0, N / 2, N / 2, N / 2);
+  grad.addColorStop(0.0, "rgba(255,255,255,1.0)");
+  grad.addColorStop(0.45, "rgba(255,255,255,1.0)");
+  grad.addColorStop(0.55, "rgba(255,255,255,0.45)");
+  grad.addColorStop(0.85, "rgba(255,255,255,0.0)");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, N, N);
+  DOT_TEX = new THREE.CanvasTexture(c);
+  DOT_TEX.colorSpace = THREE.SRGBColorSpace;
+  return DOT_TEX;
 }
 
 export class AmenityLayer implements MapLayer {
@@ -46,9 +96,9 @@ export class AmenityLayer implements MapLayer {
 
   private group3 = new THREE.Group();
   private categories: AmenityCategoryConfig[];
-  private points: THREE.Points[] = [];
-  private records: Map<THREE.Points, PointRecord[]> = new Map();
-  private materials: THREE.PointsMaterial[] = [];
+  private records: PointRecord[] = [];
+  private haloMatPool: THREE.SpriteMaterial[] = [];
+  private dotMatPool: THREE.SpriteMaterial[] = [];
   private haloMesh!: THREE.Mesh;
   private haloMat!: THREE.MeshBasicMaterial;
 
@@ -68,38 +118,62 @@ export class AmenityLayer implements MapLayer {
 
   async setup({ scene, projector }: LayerSetupContext) {
     const poi = await repo.poi();
+    const haloTex = glowTexture();
+    const dotTex = dotTexture();
 
     for (const cat of this.categories) {
       const data = poi[cat.key];
       if (!data || !data.items?.length) continue;
       const colorHex = parseHex(data.color, cat.fallbackColor);
-      const records: PointRecord[] = data.items.map((it) => {
-        const w = projector.project({ lng: it.lon, lat: it.lat });
-        return { category: cat.key, config: cat, item: it, worldX: w.x, worldZ: w.z };
-      });
-      const positions = new Float32Array(records.length * 3);
-      records.forEach((r, i) => {
-        positions[i * 3] = r.worldX;
-        positions[i * 3 + 1] = z.poi;
-        positions[i * 3 + 2] = r.worldZ;
-      });
-      const geom = new THREE.BufferGeometry();
-      geom.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-      const mat = new THREE.PointsMaterial({
-        size: cat.size ?? 22,
-        sizeAttenuation: false,
+      const baseHaloSize = cat.size ?? 320; // world meters (outer halo)
+      const baseDotSize = baseHaloSize * 0.18; // inner core ~18% of halo
+
+      // Shared per-category SpriteMaterials → one draw-state change per cat.
+      const haloMat = new THREE.SpriteMaterial({
+        map: haloTex,
         color: colorHex,
         transparent: true,
-        opacity: 0.85,
+        depthTest: false,
         depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        opacity: 0.45,
+        sizeAttenuation: true,
       });
-      this.materials.push(mat);
-      const pts = new THREE.Points(geom, mat);
-      pts.userData.category = cat.key;
-      pts.renderOrder = 30;
-      this.records.set(pts, records);
-      this.points.push(pts);
-      this.group3.add(pts);
+      const dotMat = new THREE.SpriteMaterial({
+        map: dotTex,
+        color: colorHex,
+        transparent: true,
+        depthTest: false,
+        depthWrite: false,
+        opacity: 0.95,
+        sizeAttenuation: true,
+      });
+      this.haloMatPool.push(haloMat);
+      this.dotMatPool.push(dotMat);
+
+      for (const it of data.items) {
+        const w = projector.project({ lng: it.lon, lat: it.lat });
+        const yBase = z.poi + categoryAltitude(cat.key);
+        const halo = new THREE.Sprite(haloMat);
+        halo.position.set(w.x, yBase, w.z);
+        halo.scale.set(baseHaloSize, baseHaloSize, 1);
+        halo.renderOrder = 28 + categoryOrder(cat.key);
+        const dot = new THREE.Sprite(dotMat);
+        dot.position.set(w.x, yBase + 1, w.z);
+        dot.scale.set(baseDotSize, baseDotSize, 1);
+        dot.renderOrder = 30 + categoryOrder(cat.key);
+        dot.userData.amenityCat = cat.key;
+        this.group3.add(halo, dot);
+        this.records.push({
+          category: cat.key,
+          config: cat,
+          item: it,
+          worldX: w.x,
+          worldZ: w.z,
+          haloSprite: halo,
+          dotSprite: dot,
+        });
+      }
     }
 
     // Generic halo ring used for service-area highlights
@@ -123,7 +197,8 @@ export class AmenityLayer implements MapLayer {
     this.group3.visible = v;
   }
   setOpacity(v: number) {
-    for (const m of this.materials) m.opacity = v * 0.85;
+    for (const m of this.haloMatPool) m.opacity = v * 0.45;
+    for (const m of this.dotMatPool) m.opacity = v * 0.95;
   }
 
   setHover(_id: string | null) {
@@ -134,46 +209,41 @@ export class AmenityLayer implements MapLayer {
       this.haloMesh.visible = false;
       return;
     }
-    for (const [pts, records] of this.records) {
-      const r = records.find((rec) => makeId(this.id, rec) === id);
-      if (r) {
-        this.haloMesh.position.set(r.worldX, z.serviceArea, r.worldZ);
-        this.haloMesh.scale.set(1, 1, 1);
-        this.haloMesh.visible = true;
-        const radius = r.config.serviceRadiusM ?? 800;
-        const scale = radius / 800;
-        this.haloMesh.scale.set(scale, 1, scale);
-        this.haloMat.color.setHex(r.config.fallbackColor);
-        this.haloMat.opacity = 0.55;
-        return;
-      }
-      void pts;
+    const r = this.records.find((rec) => makeId(this.id, rec) === id);
+    if (r) {
+      this.haloMesh.position.set(r.worldX, z.serviceArea, r.worldZ);
+      const radius = r.config.serviceRadiusM ?? 800;
+      const scale = radius / 800;
+      this.haloMesh.scale.set(scale, 1, scale);
+      this.haloMat.color.setHex(r.config.fallbackColor);
+      this.haloMat.opacity = 0.55;
+      this.haloMesh.visible = true;
+      return;
     }
     this.haloMesh.visible = false;
   }
 
   pick(raycaster: THREE.Raycaster): MapEntity | null {
-    raycaster.params.Points = { threshold: 50 } as never;
-    for (const pts of this.points) {
-      const hits = raycaster.intersectObject(pts, false);
-      if (!hits.length) continue;
-      const hit = hits[0];
-      const records = this.records.get(pts)!;
-      const i = hit.index ?? -1;
-      if (i < 0 || i >= records.length) continue;
-      const r = records[i];
-      return {
-        id: makeId(this.id, r),
-        kind: r.config.kind === "custom" ? "custom" : (r.config.kind as MapEntity["kind"]),
-        title: r.item.name,
-        subtitle: r.config.label,
-        lngLat: { lng: r.item.lon, lat: r.item.lat },
-        radius: r.config.serviceRadiusM ?? 800,
-        source: this.id,
-        data: { ...r.item, category: r.category, config: r.config, worldX: r.worldX, worldZ: r.worldZ },
-      };
-    }
-    return null;
+    // Pick against the precise dot sprites only (halos are decorative
+    // and would create giant pickable circles that swallow other layers).
+    const hits = raycaster.intersectObjects(
+      this.records.map((r) => r.dotSprite),
+      false,
+    );
+    if (!hits.length) return null;
+    const sprite = hits[0].object as THREE.Sprite;
+    const r = this.records.find((rec) => rec.dotSprite === sprite);
+    if (!r) return null;
+    return {
+      id: makeId(this.id, r),
+      kind: r.config.kind === "custom" ? "custom" : (r.config.kind as MapEntity["kind"]),
+      title: r.item.name,
+      subtitle: r.config.label,
+      lngLat: { lng: r.item.lon, lat: r.item.lat },
+      radius: r.config.serviceRadiusM ?? 800,
+      source: this.id,
+      data: { ...r.item, category: r.category, config: r.config, worldX: r.worldX, worldZ: r.worldZ },
+    };
   }
 
   dispose() {
@@ -181,8 +251,38 @@ export class AmenityLayer implements MapLayer {
       const m = o as THREE.Mesh;
       m.geometry?.dispose?.();
     });
-    this.materials.forEach((m) => m.dispose());
+    this.haloMatPool.forEach((m) => m.dispose());
+    this.dotMatPool.forEach((m) => m.dispose());
     this.haloMat.dispose();
+  }
+}
+
+/**
+ * Per-category altitude — small offsets so overlapping POIs of different
+ * kinds stack visibly (medical above schools above commerce). Bloom +
+ * additive blend means there's no z-fighting; this is purely about
+ * "which color wins where they overlap".
+ */
+function categoryAltitude(cat: string): number {
+  switch (cat) {
+    case "hospital": return 220;
+    case "university": return 200;
+    case "mall": return 180;
+    case "school": return 160;
+    case "supermarket": return 140;
+    case "kindergarten": return 120;
+    default: return 100;
+  }
+}
+function categoryOrder(cat: string): number {
+  switch (cat) {
+    case "hospital": return 6;
+    case "university": return 5;
+    case "mall": return 4;
+    case "school": return 3;
+    case "supermarket": return 2;
+    case "kindergarten": return 1;
+    default: return 0;
   }
 }
 

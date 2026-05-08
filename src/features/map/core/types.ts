@@ -122,6 +122,7 @@ export type LayerGroup =
   | "supply"        // 小区
   | "amenity"       // schools, hospitals, parks, mall
   | "policy"        // policy projects
+  | "label"         // text labels / landmarks (always-on-top, no picking)
   | "tool";         // ephemeral overlays (isochrones, search results)
 
 // ---------- Entities ----------

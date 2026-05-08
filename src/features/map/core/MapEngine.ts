@@ -68,23 +68,29 @@ export class MapEngine {
     this.renderer.setPixelRatio(opts.pixelRatio ?? Math.min(window.devicePixelRatio, 2));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.05;
+    this.renderer.toneMappingExposure = 0.95;
 
-    // Scene
-    this.scene.background = new THREE.Color(sceneColors.skyHorizon);
-    this.scene.fog = new THREE.Fog(sceneColors.fog, 8000, 22000);
+    // Scene + cyberpunk gradient sky-dome (rendered as inverted icosahedron
+    // shader so the horizon stays violet-magenta even as the camera tilts).
+    this.scene.background = new THREE.Color(sceneColors.skyTop);
+    this.scene.fog = new THREE.FogExp2(sceneColors.fog, 0.000045);
+    this.addSkyDome();
 
-    // Lights — subtle, the look is mostly screen-space color
-    const ambient = new THREE.AmbientLight(0xffffff, 0.55);
-    const sun = new THREE.DirectionalLight(0xfff0d8, 0.65);
-    sun.position.set(-3000, 5000, 2000);
-    const fill = new THREE.HemisphereLight(0x9fb6ff, 0x101218, 0.35);
-    this.scene.add(ambient, sun, fill);
+    // Lights — moody. Magenta key from the south-west "horizon" + cyan rim
+    // from above gives violet shadows and cyan highlights on the district
+    // tops. Ambient is intentionally low so emissive halos pop.
+    const ambient = new THREE.AmbientLight(0x6c7bff, 0.35);
+    const key = new THREE.DirectionalLight(0xff6b9f, 0.55);
+    key.position.set(-2200, 3000, -1800);
+    const rim = new THREE.DirectionalLight(0x5be7f0, 0.45);
+    rim.position.set(2400, 2200, 2400);
+    const sky = new THREE.HemisphereLight(0xa872ff, 0x05060d, 0.4);
+    this.scene.add(ambient, key, rim, sky);
 
-    // Camera
+    // Camera — 50° feels closer to a cinematic DSLR than 45°
     const { clientWidth: w, clientHeight: h } = this.canvas;
-    this.camera = new THREE.PerspectiveCamera(45, w / h, 5, 60_000);
-    this.camera.position.set(2400, 4800, 4200);
+    this.camera = new THREE.PerspectiveCamera(50, w / h, 5, 60_000);
+    this.camera.position.set(3200, 5400, 5200);
     this.camera.lookAt(0, 0, 0);
 
     // Controls
@@ -96,15 +102,17 @@ export class MapEngine {
     this.controls.maxPolarAngle = Math.PI / 2 - 0.05;
     this.controls.target.set(0, 0, 0);
 
-    // Postprocessing
+    // Postprocessing — calibrated bloom. Strength dialed down so glowing
+    // sprites read as glints not white-out; threshold raised so only
+    // genuine highlights bleed.
     if (opts.enableBloom !== false) {
       this.composer = new EffectComposer(this.renderer);
       this.composer.addPass(new RenderPass(this.scene, this.camera));
       const bloom = new UnrealBloomPass(
         new THREE.Vector2(w, h),
         0.55, // strength
-        0.55, // radius
-        0.85, // threshold
+        0.7,  // radius
+        0.78, // threshold — only the top ~22% of luminance bleeds
       );
       this.composer.addPass(bloom);
       this.composer.addPass(new OutputPass());
@@ -316,6 +324,47 @@ export class MapEngine {
   }
 
   // ------------------------------- lifecycle
+
+  private addSkyDome() {
+    const geom = new THREE.SphereGeometry(50_000, 32, 16);
+    const mat = new THREE.ShaderMaterial({
+      side: THREE.BackSide,
+      depthWrite: false,
+      depthTest: false,
+      uniforms: {
+        topColor: { value: new THREE.Color(sceneColors.skyTop) },
+        midColor: { value: new THREE.Color(sceneColors.skyMid) },
+        horizonColor: { value: new THREE.Color(sceneColors.skyHorizon) },
+        offset: { value: 0.0 },
+      },
+      vertexShader: /* glsl */ `
+        varying vec3 vWorld;
+        void main() {
+          vec4 wp = modelMatrix * vec4(position, 1.0);
+          vWorld = wp.xyz;
+          gl_Position = projectionMatrix * viewMatrix * wp;
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        uniform vec3 topColor;
+        uniform vec3 midColor;
+        uniform vec3 horizonColor;
+        varying vec3 vWorld;
+        void main() {
+          // height factor 0 at horizon → 1 at zenith
+          float h = clamp(normalize(vWorld).y * 0.5 + 0.5, 0.0, 1.0);
+          // smooth two-stop blend (horizon → mid → top)
+          vec3 lower = mix(horizonColor, midColor, smoothstep(0.05, 0.45, h));
+          vec3 col = mix(lower, topColor, smoothstep(0.45, 1.0, h));
+          gl_FragColor = vec4(col, 1.0);
+        }
+      `,
+    });
+    const dome = new THREE.Mesh(geom, mat);
+    dome.renderOrder = -100;
+    dome.frustumCulled = false;
+    this.scene.add(dome);
+  }
 
   private handleResize() {
     const w = this.canvas.clientWidth;
