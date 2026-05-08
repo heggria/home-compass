@@ -2,6 +2,8 @@
 
 > 用公开数据,把北京板块、成交、政策一次说清楚。30 秒看懂一个板块到底值不值。
 
+[**🌐 Live Demo**](https://home-compass-eight.vercel.app) · [GitHub](https://github.com/heggria/home-compass) · MIT
+
 不替你做决定,只帮你看清差距。MVP 聚焦北京,后续再考虑扩展。
 
 ## 它做什么
