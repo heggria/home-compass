@@ -14,6 +14,7 @@ import { RoadsLayer } from "./RoadsLayer";
 import { SubwayLayer } from "./SubwayLayer";
 import { DistrictsLayer } from "./DistrictsLayer";
 import { AmenityLayer } from "./AmenityLayer";
+import { LandmarksLayer } from "./LandmarksLayer";
 import { sceneColors } from "../tokens/design";
 
 let registered = false;
@@ -37,10 +38,11 @@ export function registerDefaultLayers() {
         label: "学校 / 幼儿园",
         order: 40,
         defaultVisible: true,
+        // Sizes are world meters; tuned for halo + inner-dot pair (≈18% inner).
         categories: [
-          { key: "school", label: "学校", kind: "school", fallbackColor: sceneColors.school, serviceRadiusM: 800, size: 18 },
-          { key: "kindergarten", label: "幼儿园", kind: "school", fallbackColor: 0xb6c7ff, serviceRadiusM: 500, size: 14 },
-          { key: "university", label: "高校", kind: "school", fallbackColor: 0xa18bff, serviceRadiusM: 1200, size: 22 },
+          { key: "school",       label: "学校",   kind: "school", fallbackColor: sceneColors.school,       serviceRadiusM: 800,  size: 200 },
+          { key: "kindergarten", label: "幼儿园", kind: "school", fallbackColor: sceneColors.kindergarten, serviceRadiusM: 500,  size: 140 },
+          { key: "university",   label: "高校",   kind: "school", fallbackColor: sceneColors.university,   serviceRadiusM: 1200, size: 280 },
         ],
       }),
   });
@@ -55,7 +57,7 @@ export function registerDefaultLayers() {
         order: 41,
         defaultVisible: true,
         categories: [
-          { key: "hospital", label: "医院", kind: "hospital", fallbackColor: sceneColors.hospital, serviceRadiusM: 1500, size: 22 },
+          { key: "hospital", label: "医院", kind: "hospital", fallbackColor: sceneColors.hospital, serviceRadiusM: 1500, size: 280 },
         ],
       }),
   });
@@ -70,9 +72,11 @@ export function registerDefaultLayers() {
         order: 42,
         defaultVisible: false,
         categories: [
-          { key: "mall", label: "商场", kind: "mall", fallbackColor: sceneColors.mall, serviceRadiusM: 1200, size: 22 },
-          { key: "supermarket", label: "超市", kind: "mall", fallbackColor: 0xffd93d, serviceRadiusM: 600, size: 16 },
+          { key: "mall",        label: "商场", kind: "mall", fallbackColor: sceneColors.mall,        serviceRadiusM: 1200, size: 240 },
+          { key: "supermarket", label: "超市", kind: "mall", fallbackColor: sceneColors.supermarket, serviceRadiusM: 600,  size: 160 },
         ],
       }),
   });
+
+  registerLayer({ id: "landmarks", switchable: true, factory: () => new LandmarksLayer() });
 }

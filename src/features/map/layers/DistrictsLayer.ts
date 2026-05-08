@@ -58,7 +58,8 @@ export class DistrictsLayer implements MapLayer {
   private records: DistrictRecord[] = [];
   private hoverId: string | null = null;
   private selectId: string | null = null;
-  private materialPool: THREE.MeshLambertMaterial[] = [];
+  private materialPool: THREE.MeshPhysicalMaterial[] = [];
+  private edgeMaterials: THREE.LineBasicMaterial[] = [];
   private storeUnsub: (() => void) | null = null;
   private currentMode: BaseMode = useMapStore.getState().baseMode;
 
@@ -124,17 +125,39 @@ export class DistrictsLayer implements MapLayer {
           : HEIGHT_NEUTRAL;
 
       const geom = buildExtrudedPolygon(rings, height, projector);
-      const mat = new THREE.MeshLambertMaterial({
-        color: 0xffffff,
+      // MeshPhysicalMaterial with clearcoat → glass-like reads well under the
+      // violet/cyan rim lights and bloom. Emissive carries the data signal
+      // even in shadow.
+      const mat = new THREE.MeshPhysicalMaterial({
+        color: 0x141728,
         emissive: 0x000000,
+        emissiveIntensity: 0.4,
+        metalness: 0.08,
+        roughness: 0.46,
+        clearcoat: 0.85,
+        clearcoatRoughness: 0.32,
         transparent: true,
-        opacity: 0.92,
+        opacity: 0.94,
       });
       this.materialPool.push(mat);
       const mesh = new THREE.Mesh(geom, mat);
       mesh.position.y = z.districtBase;
       mesh.userData.districtId = `district:${props.osm_id}`;
       this.group3.add(mesh);
+
+      // Top-edge neon outline — only the top ring of the extrusion. Adds
+      // architectural definition without expensive bevel maths.
+      const edgeMat = new THREE.LineBasicMaterial({
+        color: sceneColors.district.topEdge,
+        transparent: true,
+        opacity: 0.7,
+      });
+      this.edgeMaterials.push(edgeMat);
+      const edgeGeom = buildTopEdgeRing(rings, projector);
+      const edge = new THREE.LineSegments(edgeGeom, edgeMat);
+      edge.position.y = z.districtBase + Math.max(0.5, height) + 0.3;
+      edge.renderOrder = 21;
+      this.group3.add(edge);
 
       this.records.push({
         id: `district:${props.osm_id}`,
@@ -186,9 +209,13 @@ export class DistrictsLayer implements MapLayer {
       }
       const c = hasData ? hasDataColor(t) : noDataColor;
       r.baseColor.copy(c);
-      const mat = r.mesh.material as THREE.MeshLambertMaterial;
-      mat.color.copy(c);
-      mat.emissive.set(0x000000);
+      const mat = r.mesh.material as THREE.MeshPhysicalMaterial;
+      // Diffuse stays close to the cyber-night base color — it's the
+      // emissive that carries the data; this keeps the surface readable
+      // (not just one big neon blob) while preserving signal density.
+      mat.color.set(0x0e1020).lerp(c, 0.15);
+      mat.emissive.copy(c);
+      mat.emissiveIntensity = hasData ? 0.4 : 0.12;
     }
   }
 
@@ -196,7 +223,8 @@ export class DistrictsLayer implements MapLayer {
     this.group3.visible = v;
   }
   setOpacity(v: number) {
-    for (const m of this.materialPool) m.opacity = v * 0.92;
+    for (const m of this.materialPool) m.opacity = v * 0.94;
+    for (const m of this.edgeMaterials) m.opacity = v * 0.7;
   }
 
   setHover(entityId: string | null) {
@@ -207,22 +235,28 @@ export class DistrictsLayer implements MapLayer {
   }
 
   update(frame: FrameContext) {
-    // Pulse hover/selection emissive
+    // Pulse the emissive intensity of hover/selection — keep the colored
+    // ramp (set in repaint) intact, just modulate brightness.
     const pulse = 0.5 + 0.5 * Math.sin((frame.time / HALO_PERIOD) * Math.PI * 2);
+    const baseHasData = 0.4;
+    const baseNoData = 0.12;
     for (const r of this.records) {
-      const mat = r.mesh.material as THREE.MeshLambertMaterial;
+      const mat = r.mesh.material as THREE.MeshPhysicalMaterial;
+      const dataBoost = r.price !== undefined ? baseHasData : baseNoData;
       if (r.id === this.selectId) {
-        mat.emissive.setHex(sceneColors.district.haloSelect).multiplyScalar(0.3);
+        mat.emissiveIntensity = dataBoost + 1.2 + 0.4 * pulse;
       } else if (r.id === this.hoverId) {
-        mat.emissive.setHex(sceneColors.district.haloHover).multiplyScalar(0.15 + 0.25 * pulse);
-      } else if (mat.emissive.r > 0.001 || mat.emissive.g > 0.001 || mat.emissive.b > 0.001) {
-        mat.emissive.set(0x000000);
+        mat.emissiveIntensity = dataBoost + 0.5 + 0.35 * pulse;
+      } else {
+        mat.emissiveIntensity = dataBoost;
       }
     }
   }
 
   pick(raycaster: THREE.Raycaster): MapEntity | null {
-    const hits = raycaster.intersectObjects(this.group3.children, false);
+    // Only the extruded meshes are pickable — skip the LineSegments edges
+    const meshes = this.records.map((r) => r.mesh);
+    const hits = raycaster.intersectObjects(meshes, false);
     if (!hits.length) return null;
     const hit = hits[0];
     const id = (hit.object.userData as { districtId?: string }).districtId;
@@ -335,5 +369,27 @@ function buildExtrudedPolygon(
     curveSegments: 1,
   });
   g.rotateX(-Math.PI / 2);
+  return g;
+}
+
+/**
+ * Build the top-edge wireframe of a polygon ring at y=0 (caller positions
+ * it at the top of the extrusion). Returns LineSegments-compatible
+ * geometry where each pair of consecutive points = one segment.
+ */
+function buildTopEdgeRing(
+  rings: number[][][],
+  projector: { project: (l: { lng: number; lat: number }) => { x: number; z: number } },
+): THREE.BufferGeometry {
+  const segs: number[] = [];
+  for (const ring of rings) {
+    for (let i = 0; i < ring.length - 1; i++) {
+      const a = projector.project({ lng: ring[i][0], lat: ring[i][1] });
+      const b = projector.project({ lng: ring[i + 1][0], lat: ring[i + 1][1] });
+      segs.push(a.x, 0, a.z, b.x, 0, b.z);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(segs, 3));
   return g;
 }
