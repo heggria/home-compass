@@ -1,0 +1,10 @@
+node_modules
+.next
+out
+.env*
+!.env.example
+.vercel
+*.log
+.DS_Store
+.idea
+.vscode
