@@ -8,3 +8,11 @@ out
 .DS_Store
 .idea
 .vscode
+tsconfig.tsbuildinfo
+
+# Local raw OSM/Overpass cache + map-data build venv. Reproducible from
+# scripts/build_map_data/build.py, no need to track.
+/data-raw/
+/.venv-mapdata/
+__pycache__/
+*.pyc

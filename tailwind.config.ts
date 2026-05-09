@@ -4,7 +4,8 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        brand: { DEFAULT: "#7657FF", soft: "#A18BFF" },
+        brand: { DEFAULT: "#7657FF", soft: "#9F8BFF" },
+        "brand-soft": "#9F8BFF",
         accent: { DEFAULT: "#FF8C42" },
         ink: { 950: "#0a0c10", 900: "#13161d", 700: "#2a2f3d", 500: "#6f7384" },
       },

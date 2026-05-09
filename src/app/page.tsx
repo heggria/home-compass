@@ -15,10 +15,16 @@ export default function HomePage() {
           先选自己能负担的预算,再看哪个板块的通勤、学区、流动性、政策最匹配。
           不替你做决定,只帮你看清差距。
         </p>
-        <div className="flex flex-wrap items-center gap-2 pt-1 text-xs text-zinc-500">
-          <span className="rounded-full border border-white/10 px-2 py-0.5">数据来源:公开成交</span>
-          <span className="rounded-full border border-white/10 px-2 py-0.5">仅供研究,不构成投资建议</span>
-          <span className="rounded-full border border-white/10 px-2 py-0.5">v0.1 · 占位数据</span>
+        <div className="flex flex-wrap items-center gap-3 pt-2">
+          <a
+            href="/map"
+            className="group inline-flex items-center gap-2 rounded-full border border-brand/40 bg-brand/15 px-4 py-2 text-sm font-medium text-brand-soft transition hover:border-brand hover:bg-brand/25"
+          >
+            打开 3D 地图 (alpha)
+            <span aria-hidden className="transition group-hover:translate-x-0.5">→</span>
+          </a>
+          <span className="rounded-full border border-white/10 px-2 py-0.5 text-xs text-zinc-500">数据来源:公开成交</span>
+          <span className="rounded-full border border-white/10 px-2 py-0.5 text-xs text-zinc-500">仅供研究,不构成投资建议</span>
         </div>
       </header>
 
