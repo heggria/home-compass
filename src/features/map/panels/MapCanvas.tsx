@@ -15,11 +15,44 @@ export function MapCanvas({ className }: MapCanvasProps) {
   useEffect(() => {
     registerDefaultLayers();
     if (!ref.current) return;
-    const engine = new MapEngine(ref.current, { enableBloom: true });
-    engineRef.current = engine;
+    let cancelled = false;
+    let cleanup: (() => void) | undefined;
+    // Recenter the camera on the actual data envelope so the initial
+    // view always frames everything we have, regardless of dataset size.
+    fetch("/map-data/stats.json")
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null)
+      .then((stats: null | {
+        lon_min: number; lon_max: number; lat_min: number; lat_max: number;
+        lon_center: number; lat_center: number;
+      }) => {
+        if (cancelled || !ref.current) return;
+        const center = stats
+          ? { lng: stats.lon_center, lat: stats.lat_center }
+          : undefined;
+        // Span (km) → camera distance: ~1.6× the bigger half-side keeps
+        // the whole envelope on screen with comfortable margin.
+        const halfMaxKm = stats
+          ? Math.max(
+              ((stats.lon_max - stats.lon_min) / 2) * 111 *
+                Math.cos(((stats.lat_min + stats.lat_max) / 2 * Math.PI) / 180),
+              ((stats.lat_max - stats.lat_min) / 2) * 111,
+            )
+          : undefined;
+        const engine = new MapEngine(ref.current, {
+          enableBloom: true,
+          center,
+          framingHalfSpanMeters: halfMaxKm ? halfMaxKm * 1000 : undefined,
+        });
+        engineRef.current = engine;
+        cleanup = () => {
+          engine.dispose();
+          engineRef.current = null;
+        };
+      });
     return () => {
-      engine.dispose();
-      engineRef.current = null;
+      cancelled = true;
+      cleanup?.();
     };
   }, []);
 

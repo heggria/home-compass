@@ -25,9 +25,15 @@ export interface MapEngineOptions {
   center?: LngLat;
   enableBloom?: boolean;
   pixelRatio?: number;
+  /**
+   * Half of the larger side of the data envelope, in meters. When set,
+   * the engine sizes the initial camera distance + maxDistance so the
+   * whole envelope fits on screen with a comfortable margin.
+   */
+  framingHalfSpanMeters?: number;
 }
 
-const DEFAULT_CENTER: LngLat = { lng: 116.34, lat: 40.07 };
+const DEFAULT_CENTER: LngLat = { lng: 116.397, lat: 39.9 };
 
 export class MapEngine {
   readonly canvas: HTMLCanvasElement;
@@ -91,8 +97,16 @@ export class MapEngine {
 
     // Camera — 50° feels closer to a cinematic DSLR than 45°
     const { clientWidth: w, clientHeight: h } = this.canvas;
-    this.camera = new THREE.PerspectiveCamera(50, w / h, 5, 60_000);
-    this.camera.position.set(3200, 5400, 5200);
+    // Default to a "looks good for ~12 km Beijing crop" frame; bump it
+    // out when caller supplies framingHalfSpanMeters (covers the 6th
+    // ring's ~30 km half-span).
+    const halfSpan = opts.framingHalfSpanMeters ?? 6_000;
+    // Empirical: the camera ends up roughly half-span * 1.7 away on the
+    // diagonal at 50° FOV with a comfortable top-down tilt.
+    const initDist = Math.max(3_500, halfSpan * 1.7);
+    const farPlane = Math.max(60_000, halfSpan * 12);
+    this.camera = new THREE.PerspectiveCamera(50, w / h, 5, farPlane);
+    this.camera.position.set(initDist * 0.45, initDist * 0.78, initDist * 0.74);
     this.camera.lookAt(0, 0, 0);
 
     // Controls — City-Skylines style:
@@ -110,7 +124,7 @@ export class MapEngine {
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.08;
     this.controls.minDistance = 600;
-    this.controls.maxDistance = 22_000;
+    this.controls.maxDistance = Math.max(22_000, halfSpan * 4);
     this.controls.maxPolarAngle = Math.PI / 2 - 0.05;
     this.controls.target.set(0, 0, 0);
     this.controls.zoomSpeed = 1.1;
